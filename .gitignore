@@ -13,3 +13,7 @@ JM_Downloads/
 *.jpeg
 *.png
 *.webp
+
+# 文档配图例外
+!docs/*.jpg
+!docs/*.png
