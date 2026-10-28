@@ -15,7 +15,7 @@ Linux / Android（DSHA Ubuntu 容器）能直接跑的形式，并补了几个�
 
 ## 环境要求
 
-- Linux，或者 Android 上跑 DSHA（Ubuntu 容器）
+- Linux，或者 Android 上跑 [DSHA](https://github.com/DSH-APP/DSHA)（Ubuntu 容器）
 - Python 3.9+
 - 能访问 `ilinkai.weixin.qq.com`（微信 bot 接口）和 JM 的图片 CDN
 - 一个微信账号用来扫码绑定（建议小号）
@@ -176,3 +176,8 @@ bash uninstall.sh
 
 微信这套走的是 ilink bot 接口（`ilinkai.weixin.qq.com`），属于非官方自动化用法，
 存在账号风控风险，建议只用小号，别拿主号跑。
+
+## 相关
+
+- [DSHA](https://github.com/DSH-APP/DSHA) —— 免 ROOT、免 Termux，在手机上跑 DeepSeek Harness 的 App。
+  本项目就是在它提供的 Ubuntu 容器里跑起来的：容器启动 → 自动拉起 bot（见「自动启动」）。
