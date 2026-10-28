@@ -13,6 +13,12 @@ Linux / Android（DSHA Ubuntu 容器）能直接跑的形式，并补了几个�
 - 同一本重复发只回旧 PDF；按消息 ID 去重；白名单只认绑定账号；单实例锁
 - 日志里用北京时间（容器没 tzdata，用 `TZ=UTC-8` 固定偏移）
 
+## 实际效果
+
+微信里发一条 `jm <id>`，bot 回下载进度和 PDF：
+
+![微信聊天里发 jm 命令，bot 回报下载完成并回传 PDF](docs/wechat-demo.jpg)
+
 ## 环境要求
 
 - Linux，或者 Android 上跑 [DSHA](https://github.com/DSH-APP/DSHA)（Ubuntu 容器）
