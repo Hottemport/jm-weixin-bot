@@ -1,0 +1,15 @@
+# 运行时产物，绝不提交
+accounts/
+*.log
+*.pid
+*.lock
+__pycache__/
+*.pyc
+.jm-weixin/
+.dsh/
+JM_Downloads/
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.webp
