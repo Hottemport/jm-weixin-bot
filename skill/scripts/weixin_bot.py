@@ -38,9 +38,9 @@ DOWNLOAD_RE = re.compile(r"^(?:下载|download)\s*[-_#]?\s*(\d{3,9})$", re.IGNOR
 HELP_TEXT = (
     "可用命令：\n"
     "jm <id>     下载并回 PDF（例：jm1088227）\n"
+    "<关键词>    按名字搜索，回编号列表（例：白楊）\n"
     "status      运行状态\n"
-    "help        这张菜单\n"
-    "只认这三条，闲聊不会回。"
+    "help        这张菜单"
 )
 
 SKIP_OLDER_THAN_MS = 60 * 60 * 1000  # 超过 1 小时的积压消息不回，避免重启后刷屏
@@ -182,6 +182,54 @@ def notify_ready(account: dict, allow: set[str]) -> bool:
             else:
                 log("就绪通知没发出去: %r" % (err,))
     return False
+
+
+def queue_pending(state: dict, peer: str, pdf: Path, caption: str,
+                  jm_id: str | None = None, root: Path | None = None) -> None:
+    """发送被拒（-2 会话过期等）时把 PDF 记下来，下次用户发消息时补发。"""
+    items = [p for p in (state.get("pending") or [])
+             if not (p.get("peer") == peer and p.get("pdf") == str(pdf))]
+    item = {
+        "peer": peer,
+        "pdf": str(pdf),
+        "caption": caption,
+        "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if jm_id:
+        item["id"] = jm_id
+    if root:
+        item["root"] = str(root)
+    items.append(item)
+    state["pending"] = items[-5:]
+    save_state(state)
+    log("已加入待补发队列 %s（共 %d 条）" % (pdf, len(state["pending"])))
+
+
+def flush_pending(account: dict, state: dict, peer: str, ctx: str | None) -> None:
+    """用当前这条消息的会话窗口，把之前没发出去的 PDF 补发掉。"""
+    items = state.get("pending") or []
+    if not items:
+        return
+    remaining = []
+    for item in items:
+        if item.get("peer") != peer:
+            remaining.append(item)
+            continue
+        pdf = Path(item.get("pdf") or "")
+        if not pdf.is_file():
+            log("待补发文件不存在，丢弃: %s" % pdf)
+            continue
+        try:
+            reply(account, peer, ctx, item.get("caption") or "补发：%s" % pdf.name, media=pdf)
+            log("补发成功: %s" % pdf)
+            jid, rt = item.get("id"), item.get("root")
+            if jid and rt:
+                log("补发后清理 %s: %s" % (jid, clean_images(Path(rt), jid)))
+        except Exception as err:  # noqa: BLE001 - 补发失败就继续留着
+            log("补发失败，继续保留: %r" % (err,))
+            remaining.append(item)
+    state["pending"] = remaining
+    save_state(state)
 
 
 # ---------------------------------------------------------------------- 任务
@@ -342,20 +390,53 @@ def status_text(state: dict, root: Path) -> str:
     last = state.get("lastJm")
     if last:
         lines.append("上次任务：%s %s" % (last.get("id"), last.get("result")))
+    pending = state.get("pending") or []
+    if pending:
+        lines.append("待补发：%d 个（随便发条消息就会补发）" % len(pending))
     return "\n".join(lines)
 
 
-def handle_text(text: str, state: dict, root: Path) -> tuple[str, str | None]:
-    """返回 (立即回复, jm_id 或 None)。"""
-    lowered = text.strip().lower()
+SEARCH_LIMIT = 5
+
+
+def search_albums(root: Path, keyword: str, limit: int = SEARCH_LIMIT) -> list[tuple[str, str]]:
+    """按关键词搜本子，返回 [(id, 标题), ...]。"""
+    import jmcomic  # 延迟导入，启动快一点
+
+    option = jmcomic.create_option_by_file(str(root / "option.yml"))
+    client = option.new_jm_client()
+    page = client.search_site(keyword, 1)
+    results: list[tuple[str, str]] = []
+    for item in page:
+        if isinstance(item, tuple) and len(item) >= 2:
+            aid, name = str(item[0]), str(item[1])
+        else:
+            aid = str(getattr(item, "album_id", None) or getattr(item, "id", "") or "")
+            name = str(getattr(item, "name", "") or "")
+        if aid:
+            results.append((aid, name))
+        if len(results) >= limit:
+            break
+    return results
+
+
+def handle_text(text: str, state: dict, root: Path) -> tuple[str, str | None, str | None]:
+    """返回 (立即回复, jm_id, 搜索关键词)。"""
+    stripped = text.strip()
+    lowered = stripped.lower()
     if lowered in ("help", "?", "？", "菜单"):
-        return HELP_TEXT, None
+        return HELP_TEXT, None, None
     if lowered in ("status", "状态"):
-        return status_text(state, root), None
-    match = JM_RE.match(text.strip()) or DOWNLOAD_RE.match(text.strip())
+        return status_text(state, root), None, None
+    match = JM_RE.match(stripped) or DOWNLOAD_RE.match(stripped)
     if match:
-        return "", match.group(1)
-    return "我只认 jm <id> / status / help。发 help 看说明。", None
+        return "", match.group(1), None
+    if lowered in ("你好", "hi", "hello", "在吗", "在", "测试", "test"):
+        return "发 jm <id> 下载，或直接发名字搜索。发 help 看说明。", None, None
+    if stripped:
+        # 其余文字当搜索词：按名字找本子，回编号列表
+        return "", None, stripped
+    return "发 jm <id> 下载，或直接发名字搜索。", None, None
 
 
 # ---------------------------------------------------------------------- 主循环
@@ -379,14 +460,37 @@ def process_message(msg: dict, account: dict, state: dict, root: Path, allow: se
     text = extract_text(msg)
     peer = msg.get("from_user_id")
     ctx = msg.get("context_token")
+    # 上次没发出去的 PDF，趁这条新消息的会话窗口还在，先补发
+    if peer:
+        try:
+            flush_pending(account, state, peer, ctx)
+        except Exception as err:  # noqa: BLE001
+            log("补发流程出错: %r" % (err,))
     if not text:
         reply(account, peer, ctx, "只认文字命令，发 help 看说明。")
         return
 
     log("收到 %s: %r" % (peer, text[:60]))
-    immediate, jm_id = handle_text(text, state, root)
+    immediate, jm_id, keyword = handle_text(text, state, root)
     if immediate:
         reply(account, peer, ctx, immediate)
+        return
+
+    if keyword:
+        try:
+            results = search_albums(root, keyword)
+        except Exception as err:  # noqa: BLE001 - 搜索失败照常回话
+            log("搜索失败 %r" % (err,))
+            reply(account, peer, ctx, "🔍 搜索「%s」失败：%s" % (keyword[:30], str(err)[:120]))
+            return
+        if not results:
+            reply(account, peer, ctx, "🔍 「%s」没搜到。换个关键词，或直接发 jm <id>。" % keyword[:30])
+            return
+        lines = ["🔍 「%s」找到 %d 个：" % (keyword[:30], len(results))]
+        for i, (aid, name) in enumerate(results, 1):
+            lines.append("%d. jm %s  %s" % (i, aid, name[:48]))
+        lines.append("发 jm <id> 下载。")
+        reply(account, peer, ctx, "\n".join(lines))
         return
 
     assert jm_id
@@ -405,11 +509,19 @@ def process_message(msg: dict, account: dict, state: dict, root: Path, allow: se
 
     sent = False
     if ok and pdf is not None:
-        reply(account, peer, ctx, "✅ JM %s %s" % (jm_id, detail), media=pdf)
-        sent = True
+        try:
+            reply(account, peer, ctx, "✅ JM %s %s" % (jm_id, detail), media=pdf)
+            sent = True
+        except Exception as err:  # noqa: BLE001 - 发送失败不丢文件，排队等下次补发
+            log("发送 PDF 失败，转待补发: %r" % (err,))
+            queue_pending(state, peer, pdf, "✅ JM %s %s（补发）" % (jm_id, detail),
+                          jm_id=jm_id, root=root)
     else:
-        reply(account, peer, ctx, "❌ JM %s 失败：%s" % (jm_id, detail))
-    log("任务结束 %s ok=%s %s" % (jm_id, ok, detail))
+        try:
+            reply(account, peer, ctx, "❌ JM %s 失败：%s" % (jm_id, detail))
+        except Exception as err:  # noqa: BLE001
+            log("失败提示也没发出去: %r" % (err,))
+    log("任务结束 %s ok=%s %s sent=%s" % (jm_id, ok, detail, sent))
     # 文件确实发出去了才清原图；发失败就留着，方便重试
     if sent:
         log("清理原图 %s: %s" % (jm_id, clean_images(root, jm_id)))
@@ -474,8 +586,9 @@ def main(argv=None) -> int:
     if args.selftest:
         cases = ["jm1088227", "jm 123", "下载 555", "help", "status", "你好"]
         for case in cases:
-            immediate, jm_id = handle_text(case, state, root)
-            print(json.dumps({"input": case, "jm": jm_id, "reply": immediate[:40]}, ensure_ascii=False))
+            immediate, jm_id, keyword = handle_text(case, state, root)
+            print(json.dumps({"input": case, "jm": jm_id, "search": keyword,
+                              "reply": immediate[:40]}, ensure_ascii=False))
         print(json.dumps({"state": str(STATE_PATH), "log": str(LOG_PATH), "root": str(root)}, ensure_ascii=False))
         return 0
 
