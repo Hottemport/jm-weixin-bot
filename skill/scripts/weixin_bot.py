@@ -38,6 +38,7 @@ DOWNLOAD_RE = re.compile(r"^(?:下载|download)\s*[-_#]?\s*(\d{3,9})$", re.IGNOR
 HELP_TEXT = (
     "可用命令：\n"
     "jm <id>     下载并回 PDF（例：jm1088227）\n"
+    "jm <id1> <id2> …  一次多个，空格/逗号/换行分隔\n"
     "<关键词>    按名字搜索，回编号列表（例：白楊）\n"
     "status      运行状态\n"
     "help        这张菜单"
@@ -420,17 +421,37 @@ def search_albums(root: Path, keyword: str, limit: int = SEARCH_LIMIT) -> list[t
     return results
 
 
-def handle_text(text: str, state: dict, root: Path) -> tuple[str, str | None, str | None]:
-    """返回 (立即回复, jm_id, 搜索关键词)。"""
+MAX_IDS = 20
+ID_BODY_RE = re.compile(r"^[\d\s,，、;；/_\-]+$")
+JM_PREFIX_RE = re.compile(r"^(?:jm|ＪＭ|下载|download)[\s:：,，、_\-]*", re.IGNORECASE)
+DIGITS_RE = re.compile(r"\d+")
+
+
+def parse_ids(text: str) -> list[str]:
+    """从「jm 1 2 3」「1,2,3」「下载 1、2」里提取 3-9 位编号，去重保序。"""
+    body = JM_PREFIX_RE.sub("", text.strip())
+    if not body or not ID_BODY_RE.match(body):
+        return []
+    ids = [t for t in DIGITS_RE.findall(body) if 3 <= len(t) <= 9]
+    seen, out = set(), []
+    for i in ids:
+        if i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
+
+
+def handle_text(text: str, state: dict, root: Path) -> tuple[str, list[str] | None, str | None]:
+    """返回 (立即回复, 编号列表, 搜索关键词)。"""
     stripped = text.strip()
     lowered = stripped.lower()
     if lowered in ("help", "?", "？", "菜单"):
         return HELP_TEXT, None, None
     if lowered in ("status", "状态"):
         return status_text(state, root), None, None
-    match = JM_RE.match(stripped) or DOWNLOAD_RE.match(stripped)
-    if match:
-        return "", match.group(1), None
+    ids = parse_ids(stripped)
+    if ids:
+        return "", ids, None
     if lowered in ("你好", "hi", "hello", "在吗", "在", "测试", "test"):
         return "发 jm <id> 下载，或直接发名字搜索。发 help 看说明。", None, None
     if stripped:
@@ -440,6 +461,46 @@ def handle_text(text: str, state: dict, root: Path) -> tuple[str, str | None, st
 
 
 # ---------------------------------------------------------------------- 主循环
+
+
+def run_one(account: dict, peer: str, ctx: str | None, state: dict, root: Path,
+            jm_id: str, seq: int | None = None, total: int | None = None) -> bool:
+    """下载 -> 合并 -> 发微信 -> 清理，单个编号的完整流程。"""
+    state["busy"] = jm_id
+    persist_account(account)
+    save_state(state)
+
+    def _progress(text: str) -> None:
+        reply(account, peer, ctx, text)
+
+    ok, detail, pdf = download_jm(jm_id, root, progress=_progress)
+    state["busy"] = None
+    state["lastJm"] = {"id": jm_id, "result": "ok" if ok else detail,
+                       "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    save_state(state)
+
+    caption = "✅ JM %s %s" % (jm_id, detail)
+    if seq and total:
+        caption = "✅ (%d/%d) JM %s %s" % (seq, total, jm_id, detail)
+
+    sent = False
+    if ok and pdf is not None:
+        try:
+            reply(account, peer, ctx, caption, media=pdf)
+            sent = True
+        except Exception as err:  # noqa: BLE001 - 发送失败不丢文件，排队等下次补发
+            log("发送 PDF 失败，转待补发: %r" % (err,))
+            queue_pending(state, peer, pdf, caption + "（补发）", jm_id=jm_id, root=root)
+    else:
+        try:
+            reply(account, peer, ctx, "❌ JM %s 失败：%s" % (jm_id, detail))
+        except Exception as err:  # noqa: BLE001
+            log("失败提示也没发出去: %r" % (err,))
+    log("任务结束 %s ok=%s %s sent=%s" % (jm_id, ok, detail, sent))
+    # 文件确实发出去了才清原图；发失败就留着，方便重试
+    if sent:
+        log("清理原图 %s: %s" % (jm_id, clean_images(root, jm_id)))
+    return ok
 
 
 def process_message(msg: dict, account: dict, state: dict, root: Path, allow: set[str]) -> None:
@@ -471,7 +532,7 @@ def process_message(msg: dict, account: dict, state: dict, root: Path, allow: se
         return
 
     log("收到 %s: %r" % (peer, text[:60]))
-    immediate, jm_id, keyword = handle_text(text, state, root)
+    immediate, jm_ids, keyword = handle_text(text, state, root)
     if immediate:
         reply(account, peer, ctx, immediate)
         return
@@ -493,38 +554,24 @@ def process_message(msg: dict, account: dict, state: dict, root: Path, allow: se
         reply(account, peer, ctx, "\n".join(lines))
         return
 
-    assert jm_id
-    reply(account, peer, ctx, "收到，开始下载 JM %s，完成后把 PDF 发你。" % jm_id)
-    state["busy"] = jm_id
-    persist_account(account)
-    save_state(state)
-
-    def _progress(text: str) -> None:
-        reply(account, peer, ctx, text)
-
-    ok, detail, pdf = download_jm(jm_id, root, progress=_progress)
-    state["busy"] = None
-    state["lastJm"] = {"id": jm_id, "result": "ok" if ok else detail, "at": time.strftime("%Y-%m-%d %H:%M:%S")}
-    save_state(state)
-
-    sent = False
-    if ok and pdf is not None:
-        try:
-            reply(account, peer, ctx, "✅ JM %s %s" % (jm_id, detail), media=pdf)
-            sent = True
-        except Exception as err:  # noqa: BLE001 - 发送失败不丢文件，排队等下次补发
-            log("发送 PDF 失败，转待补发: %r" % (err,))
-            queue_pending(state, peer, pdf, "✅ JM %s %s（补发）" % (jm_id, detail),
-                          jm_id=jm_id, root=root)
+    ids = jm_ids
+    if len(ids) > MAX_IDS:
+        reply(account, peer, ctx, "一次最多 %d 个，先处理前 %d 个。\n%s" % (
+            MAX_IDS, MAX_IDS, " ".join(ids[:MAX_IDS])))
+        ids = ids[:MAX_IDS]
+    if len(ids) == 1:
+        reply(account, peer, ctx, "收到，开始下载 JM %s，完成后把 PDF 发你。" % ids[0])
     else:
-        try:
-            reply(account, peer, ctx, "❌ JM %s 失败：%s" % (jm_id, detail))
-        except Exception as err:  # noqa: BLE001
-            log("失败提示也没发出去: %r" % (err,))
-    log("任务结束 %s ok=%s %s sent=%s" % (jm_id, ok, detail, sent))
-    # 文件确实发出去了才清原图；发失败就留着，方便重试
-    if sent:
-        log("清理原图 %s: %s" % (jm_id, clean_images(root, jm_id)))
+        reply(account, peer, ctx, "收到 %d 个：%s\n按顺序下载，完成一个发一个。" % (len(ids), " ".join(ids)))
+    for idx, jid in enumerate(ids, 1):
+        if len(ids) > 1:
+            try:
+                reply(account, peer, ctx, "⏳ 第 %d/%d 个：JM %s" % (idx, len(ids), jid))
+            except Exception as err:  # noqa: BLE001
+                log("序号提示发送失败: %r" % (err,))
+        run_one(account, peer, ctx, state, root, jid,
+                seq=idx if len(ids) > 1 else None,
+                total=len(ids) if len(ids) > 1 else None)
 
 
 def serve(account: dict, state: dict, root: Path, allow: set[str], once: bool = False) -> int:
@@ -584,10 +631,11 @@ def main(argv=None) -> int:
     state = load_state()
 
     if args.selftest:
-        cases = ["jm1088227", "jm 123", "下载 555", "help", "status", "你好"]
+        cases = ["jm1088227", "jm 123", "下载 555", "help", "status", "你好",
+                 "jm14999 18373 6300", "14999,18373，6300", "jm 1 2 3"]
         for case in cases:
-            immediate, jm_id, keyword = handle_text(case, state, root)
-            print(json.dumps({"input": case, "jm": jm_id, "search": keyword,
+            immediate, ids, keyword = handle_text(case, state, root)
+            print(json.dumps({"input": case, "jm": ids, "search": keyword,
                               "reply": immediate[:40]}, ensure_ascii=False))
         print(json.dumps({"state": str(STATE_PATH), "log": str(LOG_PATH), "root": str(root)}, ensure_ascii=False))
         return 0
