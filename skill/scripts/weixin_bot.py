@@ -460,12 +460,17 @@ def search_albums(root: Path, keyword: str, limit: int = SEARCH_LIMIT) -> list[t
 MAX_IDS = 20
 ID_BODY_RE = re.compile(r"^[\d\s,，、;；/_\-]+$")
 JM_PREFIX_RE = re.compile(r"^(?:jm|ＪＭ|下载|download)[\s:：,，、_\-]*", re.IGNORECASE)
+# 每个编号前都可能带前缀（多行写 jm 1 / jm 2 / …）
+INLINE_PREFIX_RE = re.compile(
+    r"(?:^|(?<=[\s,，、;；/]))(?:jm|ＪＭ|下载|download)[\s:：,，、_\-]*",
+    re.IGNORECASE,
+)
 DIGITS_RE = re.compile(r"\d+")
 
 
 def parse_ids(text: str) -> list[str]:
-    """从「jm 1 2 3」「1,2,3」「下载 1、2」里提取 3-9 位编号，去重保序。"""
-    body = JM_PREFIX_RE.sub("", text.strip())
+    """从「jm 1 2 3」「1,2,3」「jm 1 / jm 2」里提取 3-9 位编号，去重保序。"""
+    body = INLINE_PREFIX_RE.sub("", text.strip())
     if not body or not ID_BODY_RE.match(body):
         return []
     ids = [t for t in DIGITS_RE.findall(body) if 3 <= len(t) <= 9]
@@ -492,7 +497,7 @@ def handle_text(text: str, state: dict, root: Path) -> tuple[str, list[str] | No
         return "发 jm <id> 下载，或直接发名字搜索。发 help 看说明。", None, None
     if stripped:
         # 其余文字当搜索词：按名字找本子，回编号列表
-        return "", None, stripped
+        return "", None, JM_PREFIX_RE.sub("", stripped).strip() or stripped
     return "发 jm <id> 下载，或直接发名字搜索。", None, None
 
 
