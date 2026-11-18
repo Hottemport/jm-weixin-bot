@@ -344,7 +344,7 @@ def download_jm(jm_id: str, root: Path, timeout: float = 1800.0, progress=None) 
                 existing = shared
             except OSError as err:
                 log("挪到共享目录失败: %r" % (err,))
-        return True, "之前下过（%.1f MB），直接发你" % (size / 1048576), existing
+        return True, "之前下过（%.1f MB）" % (size / 1048576), existing
     if pdf.is_file():
         size = pdf.stat().st_size
         log("已有 PDF 只有 %d 字节，判定损坏，重新合并" % size)
@@ -518,17 +518,27 @@ def run_one(account: dict, peer: str, ctx: str | None, state: dict, root: Path,
     caption = "✅ JM %s %s" % (jm_id, detail)
     if seq and total:
         caption = "✅ (%d/%d) JM %s %s" % (seq, total, jm_id, detail)
-    if SHARE_DIR and ok:
-        caption += "（已存 %s）" % Path(SHARE_DIR).name
+
+    # 文件已经落在手机共享目录时，只回文字 + 路径，不再上传 file_item
+    in_share = bool(SHARE_DIR) and pdf is not None and pdf.parent == Path(SHARE_DIR)
+    send_file = os.environ.get("JM_SEND_FILE", "0") == "1"
 
     sent = False
     if ok and pdf is not None:
-        try:
-            reply(account, peer, ctx, caption, media=pdf)
+        if in_share and not send_file:
+            msg = "%s\n📁 %s" % (caption, pdf)
+            try:
+                reply(account, peer, ctx, msg)
+            except Exception as err:  # noqa: BLE001 - 文件已在共享目录，通知失败也不影响拿文件
+                log("完成通知发送失败（文件已在共享目录）: %r" % (err,))
             sent = True
-        except Exception as err:  # noqa: BLE001 - 发送失败不丢文件，排队等下次补发
-            log("发送 PDF 失败，转待补发: %r" % (err,))
-            queue_pending(state, peer, pdf, caption + "（补发）", jm_id=jm_id, root=root)
+        else:
+            try:
+                reply(account, peer, ctx, caption, media=pdf)
+                sent = True
+            except Exception as err:  # noqa: BLE001 - 发送失败不丢文件，排队等下次补发
+                log("发送 PDF 失败，转待补发: %r" % (err,))
+                queue_pending(state, peer, pdf, caption + "（补发）", jm_id=jm_id, root=root)
     else:
         try:
             reply(account, peer, ctx, "❌ JM %s 失败：%s" % (jm_id, detail))

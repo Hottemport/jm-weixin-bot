@@ -61,6 +61,7 @@ bash "$BOT/autostart/disable-autostart.sh"
 
 成品 PDF 直接存到 `JM_SHARE_DIR`（Android 默认 `/sdcard/Download/DSH-JM-Download`），
 容器库目录不再留第二份；查重也查共享目录，移动失败只记日志、不影响发送。
+文件在共享目录时微信只回文字 + 路径，不上传 file_item；`JM_SEND_FILE=1` 可恢复发文件。
 
 ## 注意
 
