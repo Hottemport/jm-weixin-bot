@@ -57,6 +57,11 @@ bash "$BOT/autostart/disable-autostart.sh"
 
 只适用于 DSHA/DSH 容器；普通 Linux 用 systemd（见 README）。
 
+## 共享目录
+
+下载完成后会额外复制一份到 `JM_SHARE_DIR`（Android 默认 `/sdcard/Download/DSHA-out`），
+复制失败只记日志、不影响发送。库目录和共享目录各存一份，注意空间。
+
 ## 注意
 
 - 微信要先能看到 **clawbot 插件**（我 → 设置 → 插件）：微信升级到最新版 → 杀掉微信进程 → 重开；看不到就再杀一次重开。没有这个插件时扫码后可能找不到 bot 或发消息没反应；

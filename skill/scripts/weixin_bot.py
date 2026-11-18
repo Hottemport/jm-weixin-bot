@@ -29,6 +29,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import send_weixin as wx  # noqa: E402
 
 DEFAULT_ROOT = Path(os.environ.get("JM_ROOT") or r"D:\AI\JM_Downloads")
+# 额外把成品复制一份到手机共享目录（如 /sdcard/Download/DSHA-out）；留空则不复制
+SHARE_DIR = (os.environ.get("JM_SHARE_DIR") or "").strip()
 STATE_PATH = Path(os.environ.get("JM_BOT_STATE") or (Path.home() / ".dsh" / "weixin" / "bot-state.json"))
 LOG_PATH = Path(os.environ.get("JM_BOT_LOG") or (Path.home() / ".dsh" / "weixin" / "bot.log"))
 
@@ -391,6 +393,8 @@ def status_text(state: dict, root: Path) -> str:
     last = state.get("lastJm")
     if last:
         lines.append("上次任务：%s %s" % (last.get("id"), last.get("result")))
+    if SHARE_DIR:
+        lines.append("共享目录：%s" % SHARE_DIR)
     pending = state.get("pending") or []
     if pending:
         lines.append("待补发：%d 个（随便发条消息就会补发）" % len(pending))
@@ -463,6 +467,21 @@ def handle_text(text: str, state: dict, root: Path) -> tuple[str, list[str] | No
 # ---------------------------------------------------------------------- 主循环
 
 
+def copy_to_share(pdf: Path) -> str:
+    """把成品额外复制一份到共享目录，方便手机上的文件管理器/微信直接取。"""
+    if not SHARE_DIR:
+        return ""
+    try:
+        dest_dir = Path(SHARE_DIR)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / pdf.name
+        shutil.copy2(pdf, dest)
+        return str(dest)
+    except Exception as err:  # noqa: BLE001 - 复制失败不影响主流程
+        log("复制到共享目录失败: %r" % (err,))
+        return ""
+
+
 def run_one(account: dict, peer: str, ctx: str | None, state: dict, root: Path,
             jm_id: str, seq: int | None = None, total: int | None = None) -> bool:
     """下载 -> 合并 -> 发微信 -> 清理，单个编号的完整流程。"""
@@ -474,6 +493,11 @@ def run_one(account: dict, peer: str, ctx: str | None, state: dict, root: Path,
         reply(account, peer, ctx, text)
 
     ok, detail, pdf = download_jm(jm_id, root, progress=_progress)
+    shared = ""
+    if ok and pdf is not None:
+        shared = copy_to_share(pdf)
+        if shared:
+            log("已复制到共享目录: %s" % shared)
     state["busy"] = None
     state["lastJm"] = {"id": jm_id, "result": "ok" if ok else detail,
                        "at": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -482,6 +506,8 @@ def run_one(account: dict, peer: str, ctx: str | None, state: dict, root: Path,
     caption = "✅ JM %s %s" % (jm_id, detail)
     if seq and total:
         caption = "✅ (%d/%d) JM %s %s" % (seq, total, jm_id, detail)
+    if shared:
+        caption += "（已存 %s）" % Path(shared).parent.name
 
     sent = False
     if ok and pdf is not None:
