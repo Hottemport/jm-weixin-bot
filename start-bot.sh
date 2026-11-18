@@ -18,9 +18,9 @@ PIDFILE=$WORK/bot.pid
 export PYTHONIOENCODING=utf-8
 # 容器里没装 tzdata（Asia/Shanghai 不生效），用 POSIX 偏移表示北京时间 UTC+8
 export TZ=${JM_TZ:-UTC-8}
-# 下载完成后额外复制一份到共享目录；Android 上默认 /sdcard/Download/DSHA-out
+# 下载完成后额外复制一份到共享目录；Android 上默认 /sdcard/Download/DSH-JM-Download
 if [ -z "${JM_SHARE_DIR:-}" ] && [ -d /sdcard/Download ]; then
-  JM_SHARE_DIR=/sdcard/Download/DSHA-out
+  JM_SHARE_DIR=/sdcard/Download/DSH-JM-Download
 fi
 export JM_SHARE_DIR
 

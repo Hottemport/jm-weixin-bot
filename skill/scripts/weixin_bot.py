@@ -29,7 +29,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import send_weixin as wx  # noqa: E402
 
 DEFAULT_ROOT = Path(os.environ.get("JM_ROOT") or r"D:\AI\JM_Downloads")
-# 额外把成品复制一份到手机共享目录（如 /sdcard/Download/DSHA-out）；留空则不复制
+# 额外把成品复制一份到手机共享目录（如 /sdcard/Download/DSH-JM-Download）；留空则不复制
 SHARE_DIR = (os.environ.get("JM_SHARE_DIR") or "").strip()
 STATE_PATH = Path(os.environ.get("JM_BOT_STATE") or (Path.home() / ".dsh" / "weixin" / "bot-state.json"))
 LOG_PATH = Path(os.environ.get("JM_BOT_LOG") or (Path.home() / ".dsh" / "weixin" / "bot.log"))
