@@ -59,8 +59,8 @@ bash "$BOT/autostart/disable-autostart.sh"
 
 ## 共享目录
 
-下载完成后会额外复制一份到 `JM_SHARE_DIR`（Android 默认 `/sdcard/Download/DSH-JM-Download`），
-复制失败只记日志、不影响发送。库目录和共享目录各存一份，注意空间。
+成品 PDF 直接存到 `JM_SHARE_DIR`（Android 默认 `/sdcard/Download/DSH-JM-Download`），
+容器库目录不再留第二份；查重也查共享目录，移动失败只记日志、不影响发送。
 
 ## 注意
 

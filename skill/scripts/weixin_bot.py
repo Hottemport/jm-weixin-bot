@@ -242,6 +242,13 @@ def find_pdf(root: Path, jm_id: str) -> Path:
     return root / jm_id / ("JM_%s.pdf" % jm_id)
 
 
+def share_pdf(jm_id: str) -> Path | None:
+    """共享目录里的成品路径；没配 JM_SHARE_DIR 时返回 None。"""
+    if not SHARE_DIR:
+        return None
+    return Path(SHARE_DIR) / ("JM_%s.pdf" % jm_id)
+
+
 def run_cmd(cmd: list[str], timeout: float) -> tuple[int, str]:
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
@@ -320,11 +327,26 @@ def _run_jmcomic(cmd: list[str], timeout: float, root: Path, jm_id: str, progres
 
 def download_jm(jm_id: str, root: Path, timeout: float = 1800.0, progress=None) -> tuple[bool, str, Path | None]:
     pdf = find_pdf(root, jm_id)
+    shared = share_pdf(jm_id)
     force = False
+    existing = None
+    for cand in (shared, pdf):
+        if cand and cand.is_file() and cand.stat().st_size >= 1024:
+            existing = cand
+            break
+    if existing is not None:
+        size = existing.stat().st_size
+        # 只存在库目录里的旧文件，顺手挪到共享目录，避免存两份
+        if shared and existing != shared:
+            try:
+                shared.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(existing), str(shared))
+                existing = shared
+            except OSError as err:
+                log("挪到共享目录失败: %r" % (err,))
+        return True, "之前下过（%.1f MB），直接发你" % (size / 1048576), existing
     if pdf.is_file():
         size = pdf.stat().st_size
-        if size >= 1024:
-            return True, "之前下过（%.1f MB），直接发你" % (size / 1048576), pdf
         log("已有 PDF 只有 %d 字节，判定损坏，重新合并" % size)
         force = True
 
@@ -358,9 +380,19 @@ def download_jm(jm_id: str, root: Path, timeout: float = 1800.0, progress=None) 
         return False, "合并失败：%s" % output[-300:], None
     if data.get("error"):
         return False, "合并失败：%s" % data["error"], None
-    if not Path(data.get("pdf", "")).is_file():
+    merged = Path(data.get("pdf", ""))
+    if not merged.is_file():
         return False, "合并后没找到 PDF", None
-    return True, "下载完成：%s 页，%.1f MB" % (data.get("pages", 0), int(data.get("bytes", 0)) / 1048576), Path(data["pdf"])
+    # 配了共享目录就直接挪过去，库里不再保留第二份
+    dest = share_pdf(jm_id)
+    if dest is not None:
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(merged), str(dest))
+            merged = dest
+        except OSError as err:
+            log("挪到共享目录失败，保留在库目录: %r" % (err,))
+    return True, "下载完成：%s 页，%.1f MB" % (data.get("pages", 0), int(data.get("bytes", 0)) / 1048576), merged
 
 
 def clean_images(root: Path, jm_id: str) -> str:
@@ -467,21 +499,6 @@ def handle_text(text: str, state: dict, root: Path) -> tuple[str, list[str] | No
 # ---------------------------------------------------------------------- 主循环
 
 
-def copy_to_share(pdf: Path) -> str:
-    """把成品额外复制一份到共享目录，方便手机上的文件管理器/微信直接取。"""
-    if not SHARE_DIR:
-        return ""
-    try:
-        dest_dir = Path(SHARE_DIR)
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / pdf.name
-        shutil.copy2(pdf, dest)
-        return str(dest)
-    except Exception as err:  # noqa: BLE001 - 复制失败不影响主流程
-        log("复制到共享目录失败: %r" % (err,))
-        return ""
-
-
 def run_one(account: dict, peer: str, ctx: str | None, state: dict, root: Path,
             jm_id: str, seq: int | None = None, total: int | None = None) -> bool:
     """下载 -> 合并 -> 发微信 -> 清理，单个编号的完整流程。"""
@@ -493,11 +510,6 @@ def run_one(account: dict, peer: str, ctx: str | None, state: dict, root: Path,
         reply(account, peer, ctx, text)
 
     ok, detail, pdf = download_jm(jm_id, root, progress=_progress)
-    shared = ""
-    if ok and pdf is not None:
-        shared = copy_to_share(pdf)
-        if shared:
-            log("已复制到共享目录: %s" % shared)
     state["busy"] = None
     state["lastJm"] = {"id": jm_id, "result": "ok" if ok else detail,
                        "at": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -506,8 +518,8 @@ def run_one(account: dict, peer: str, ctx: str | None, state: dict, root: Path,
     caption = "✅ JM %s %s" % (jm_id, detail)
     if seq and total:
         caption = "✅ (%d/%d) JM %s %s" % (seq, total, jm_id, detail)
-    if shared:
-        caption += "（已存 %s）" % Path(shared).parent.name
+    if SHARE_DIR and ok:
+        caption += "（已存 %s）" % Path(SHARE_DIR).name
 
     sent = False
     if ok and pdf is not None:
